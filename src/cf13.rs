@@ -1,4 +1,3 @@
-use ark_bn254::{Bn254, Fr, G1Projective, G2Projective};
 use ark_ec::pairing::Pairing;
 use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
 use ark_std::rand::Rng;
@@ -6,29 +5,35 @@ use ark_std::{UniformRand, Zero};
 use sha2::Sha256;
 
 type Error = String;
-type Commitment = G1Projective;
-type Proof = G1Projective;
+type Commitment<P> = <P as Pairing>::G1;
+type Proof<P> = <P as Pairing>::G1;
 
-pub struct Parameters {
-    pub g_g2: G2Projective,
-    pub h_g1: Vec<G1Projective>,
-    pub h_g2: Vec<G2Projective>,
-    pub hh_g1: Vec<Vec<G1Projective>>,
-    pub hh_g2: Vec<Vec<G2Projective>>,
+pub struct Parameters<P: Pairing> {
+    pub g_g2: P::G2,
+    pub h_g1: Vec<P::G1>,
+    pub h_g2: Vec<P::G2>,
+    pub hh_g1: Vec<Vec<P::G1>>,
+    pub hh_g2: Vec<Vec<P::G2>>,
+    pub hasher: DefaultFieldHasher<Sha256>,
 }
-pub struct AuxData {
-    msg_hashes: Vec<Fr>,
+pub struct AuxData<P: Pairing> {
+    msg_hashes: Vec<P::ScalarField>,
 }
 
-fn new_hasher() -> DefaultFieldHasher<Sha256> {
+fn new_hasher<P: Pairing>() -> DefaultFieldHasher<Sha256> {
     let domain = &[];
-    <DefaultFieldHasher<Sha256> as HashToField<Fr>>::new(domain)
+    <DefaultFieldHasher<Sha256> as HashToField<P::ScalarField>>::new(domain)
 }
 
-pub fn generate_parameters<R: Rng>(rng: &mut R, q: usize) -> Result<Parameters, Error> {
-    let g_g1 = G1Projective::rand(rng);
-    let g_g2 = G2Projective::rand(rng);
-    let z = (0..q).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
+pub fn generate_parameters<R: Rng, P: Pairing>(
+    rng: &mut R,
+    q: usize,
+) -> Result<Parameters<P>, Error> {
+    let g_g1 = P::G1::rand(rng);
+    let g_g2 = P::G2::rand(rng);
+    let z = (0..q)
+        .map(|_| P::ScalarField::rand(rng))
+        .collect::<Vec<_>>();
     let h_g1 = z.iter().map(|zi| g_g1 * zi).collect::<Vec<_>>();
     let h_g2 = z.iter().map(|zi| g_g2 * zi).collect::<Vec<_>>();
     let hh_g1 = h_g1
@@ -40,30 +45,36 @@ pub fn generate_parameters<R: Rng>(rng: &mut R, q: usize) -> Result<Parameters, 
         .map(|&hi| z.iter().map(|zi| hi * zi).collect::<Vec<_>>())
         .collect::<Vec<Vec<_>>>();
 
+    let hasher = new_hasher::<P>();
+
     Ok(Parameters {
         g_g2,
         h_g1,
         h_g2,
         hh_g1,
         hh_g2,
+        hasher,
     })
 }
 
-pub fn commit(parameters: &Parameters, vector: &[Vec<u8>]) -> Result<(Commitment, AuxData), Error> {
+pub fn commit<P: Pairing>(
+    parameters: &Parameters<P>,
+    vector: &[Vec<u8>],
+) -> Result<(Commitment<P>, AuxData<P>), Error> {
     if parameters.h_g1.len() != vector.len() {
         return Err("vector has invalid length".to_string());
     }
 
-    let hasher = new_hasher();
+    let hasher = &parameters.hasher;
     let msg_hashes = vector
         .iter()
         .map(|mi| {
-            let hash_mi: Vec<Fr> = hasher.hash_to_field(mi, 1);
+            let hash_mi: Vec<P::ScalarField> = hasher.hash_to_field(mi, 1);
             hash_mi[0]
         })
         .collect::<Vec<_>>();
 
-    let identity = G1Projective::zero();
+    let identity = P::G1::zero();
     let c = parameters
         .h_g1
         .iter()
@@ -73,12 +84,16 @@ pub fn commit(parameters: &Parameters, vector: &[Vec<u8>]) -> Result<(Commitment
     Ok((c, aux))
 }
 
-pub fn open(parameters: &Parameters, i: usize, aux: AuxData) -> Result<Proof, Error> {
+pub fn open<P: Pairing>(
+    parameters: &Parameters<P>,
+    i: usize,
+    aux: AuxData<P>,
+) -> Result<Proof<P>, Error> {
     if i >= parameters.hh_g1.len() {
         return Err("invalid index".to_string());
     }
 
-    let identity = G1Projective::zero();
+    let identity = P::G1::zero();
     let p = parameters.hh_g1[i]
         .iter()
         .enumerate()
@@ -89,26 +104,27 @@ pub fn open(parameters: &Parameters, i: usize, aux: AuxData) -> Result<Proof, Er
     Ok(p)
 }
 
-pub fn verify(
-    parameters: &Parameters,
-    c: Commitment,
+pub fn verify<P: Pairing>(
+    parameters: &Parameters<P>,
+    c: Commitment<P>,
     msg: &[u8],
     i: usize,
-    p: Proof,
+    p: Proof<P>,
 ) -> Result<bool, Error> {
-    let hasher = new_hasher();
-    let msg_hash: Fr = hasher.hash_to_field(msg, 1)[0];
+    let hasher = &parameters.hasher;
+    let msg_hash: P::ScalarField = hasher.hash_to_field(msg, 1)[0];
     let hi_g1 = parameters.h_g1[i];
     let a = c - hi_g1 * msg_hash;
     let hi_g2 = parameters.h_g2[i];
     let g_g2 = parameters.g_g2;
-    let t1 = Bn254::pairing(a, hi_g2);
-    let t2 = Bn254::pairing(p, g_g2);
+    let t1 = P::pairing(a, hi_g2);
+    let t2 = P::pairing(p, g_g2);
     Ok(t1.eq(&t2))
 }
 
 #[cfg(test)]
 mod tests {
+    use ark_bn254::Bn254;
     use rand::RngCore;
 
     use super::*;
@@ -133,7 +149,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         // Generate parameters.
-        let params = generate_parameters(&mut rng, q).unwrap();
+        let params = generate_parameters::<_, Bn254>(&mut rng, q).unwrap();
 
         // Generate commitment.
         let (c, aux) = commit(&params, &msgs).unwrap();
