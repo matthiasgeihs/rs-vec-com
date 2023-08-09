@@ -1,22 +1,32 @@
+use ark_std::rand::Rng;
+
 pub mod cf13;
+#[cfg(test)]
+mod test;
+
+type Error = String;
 
 pub trait VectorCommitment {
     type Parameters;
-    fn generate_parameters() -> Self::Parameters;
-    fn commit(parameters: &Self::Parameters, vector: &[Vec<u8>]) -> Vec<u8>;
-    fn open(parameters: &Self::Parameters, vector: &[Vec<u8>], index: usize) -> Vec<u8>;
-}
-
-#[cfg(test)]
-mod test_util {
-    use ark_std::rand::Rng;
-    use rand_chacha::rand_core::SeedableRng;
-
-    pub fn test_rng() -> impl Rng {
-        let mut rng = rand::thread_rng();
-        let seed = rng.gen::<u64>();
-        println!("test_rng seed: {}", seed);
-
-        rand_chacha::ChaChaRng::seed_from_u64(seed)
-    }
+    type Message;
+    type Commitment;
+    type AuxData;
+    type Proof;
+    fn generate_parameters<R: Rng>(rng: &mut R, l: usize) -> Result<Self::Parameters, Error>;
+    fn commit(
+        parameters: &Self::Parameters,
+        vector: &[Self::Message],
+    ) -> Result<(Self::Commitment, Self::AuxData), Error>;
+    fn open(
+        parameters: &Self::Parameters,
+        aux: &Self::AuxData,
+        index: usize,
+    ) -> Result<Self::Proof, Error>;
+    fn verify(
+        parameters: &Self::Parameters,
+        commitment: &Self::Commitment,
+        msg: &Self::Message,
+        index: usize,
+        proof: &Self::Proof,
+    ) -> Result<bool, Error>;
 }

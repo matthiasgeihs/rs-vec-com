@@ -1,8 +1,12 @@
+use std::marker::PhantomData;
+
 use ark_ec::pairing::Pairing;
 use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
 use ark_std::rand::Rng;
 use ark_std::{UniformRand, Zero};
 use sha2::Sha256;
+
+use crate::VectorCommitment;
 
 type Error = String;
 type Commitment<P> = <P as Pairing>::G1;
@@ -87,7 +91,7 @@ pub fn commit<P: Pairing>(
 pub fn open<P: Pairing>(
     parameters: &Parameters<P>,
     i: usize,
-    aux: AuxData<P>,
+    aux: &AuxData<P>,
 ) -> Result<Proof<P>, Error> {
     if i >= parameters.hh_g1.len() {
         return Err("invalid index".to_string());
@@ -106,20 +110,64 @@ pub fn open<P: Pairing>(
 
 pub fn verify<P: Pairing>(
     parameters: &Parameters<P>,
-    c: Commitment<P>,
+    c: &Commitment<P>,
     msg: &[u8],
     i: usize,
-    p: Proof<P>,
+    p: &Proof<P>,
 ) -> Result<bool, Error> {
     let hasher = &parameters.hasher;
     let msg_hash: P::ScalarField = hasher.hash_to_field(msg, 1)[0];
     let hi_g1 = parameters.h_g1[i];
-    let a = c - hi_g1 * msg_hash;
+    let a = *c - hi_g1 * msg_hash;
     let hi_g2 = parameters.h_g2[i];
     let g_g2 = parameters.g_g2;
     let t1 = P::pairing(a, hi_g2);
     let t2 = P::pairing(p, g_g2);
     Ok(t1.eq(&t2))
+}
+
+pub struct Scheme<P> {
+    _pairing: PhantomData<P>,
+}
+
+impl<P: Pairing> VectorCommitment for Scheme<P> {
+    type Parameters = Parameters<P>;
+    type Message = Vec<u8>;
+    type Commitment = Commitment<P>;
+    type AuxData = AuxData<P>;
+    type Proof = Proof<P>;
+
+    fn generate_parameters<R: Rng>(
+        rng: &mut R,
+        l: usize,
+    ) -> Result<Self::Parameters, crate::Error> {
+        generate_parameters(rng, l)
+    }
+
+    fn commit(
+        parameters: &Self::Parameters,
+        vector: &[Self::Message],
+    ) -> Result<(Self::Commitment, Self::AuxData), crate::Error> {
+        commit(parameters, vector)
+    }
+
+    fn open(
+        parameters: &Self::Parameters,
+        aux: &Self::AuxData,
+        index: usize,
+    ) -> Result<Self::Proof, crate::Error> {
+        open(parameters, index, aux)
+    }
+
+    fn verify(
+        parameters: &Self::Parameters,
+        commitment: &Self::Commitment,
+        msg: &Self::Message,
+        index: usize,
+        proof: &Self::Proof,
+    ) -> Result<bool, crate::Error> {
+        verify(parameters, commitment, msg, index, proof)
+    }
 }
 
 #[cfg(test)]
@@ -132,7 +180,7 @@ mod tests {
     #[test]
     fn gen_commit_verify() {
         // Create RNG.
-        let mut rng = crate::test_util::test_rng();
+        let mut rng = crate::test::test_rng();
 
         // Sample vector length.
         let q = rng.gen_range(8..=16);
@@ -156,16 +204,16 @@ mod tests {
 
         // Open commitment at random index.
         let i: usize = rng.gen_range(0..q);
-        let p = open(&params, i, aux).unwrap();
+        let p = open(&params, i, &aux).unwrap();
 
         // Verify opening proof.
         let msg = &msgs[i];
-        let result = verify(&params, c, msg, i, p).unwrap();
+        let result = verify(&params, &c, msg, i, &p).unwrap();
         assert!(result);
 
         // Verify opening proof against different message.
         let msg = &msgs[(i + 1) % q];
-        let result = verify(&params, c, msg, i, p).unwrap();
+        let result = verify(&params, &c, msg, i, &p).unwrap();
         assert!(!result);
     }
 }
